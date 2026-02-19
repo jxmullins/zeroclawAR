@@ -73,6 +73,14 @@ pub fn create_sandbox(config: &SecurityConfig) -> Arc<dyn Sandbox> {
 
 /// Auto-detect the best available sandbox
 fn detect_best_sandbox() -> Arc<dyn Sandbox> {
+    #[cfg(target_os = "android")]
+    {
+        // Android runs in a sandboxed environment (SELinux + app sandbox).
+        // Termux adds its own process isolation. No additional sandbox needed.
+        tracing::info!("Android detected; relying on OS-level app sandboxing");
+        return Arc::new(super::traits::NoopSandbox);
+    }
+
     #[cfg(target_os = "linux")]
     {
         // Try Landlock first (native, no dependencies)

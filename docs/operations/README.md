@@ -8,6 +8,7 @@ For operators running ZeroClaw in persistent or production-like environments.
 - Troubleshooting matrix: [../troubleshooting.md](../troubleshooting.md)
 - Safe network/gateway deployment: [../network-deployment.md](../network-deployment.md)
 - Mattermost setup (channel-specific): [../mattermost-setup.md](../mattermost-setup.md)
+- Android / Termux deployment: [../android-termux-guide.md](../android-termux-guide.md)
 
 ## Common Flow
 

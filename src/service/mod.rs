@@ -28,8 +28,10 @@ fn install(config: &Config) -> Result<()> {
         install_linux(config)
     } else if cfg!(target_os = "windows") {
         install_windows(config)
+    } else if cfg!(target_os = "android") {
+        install_termux(config)
     } else {
-        anyhow::bail!("Service management is supported on macOS and Linux only");
+        anyhow::bail!("Service management is not supported on this platform");
     }
 }
 
@@ -50,9 +52,24 @@ fn start(config: &Config) -> Result<()> {
         run_checked(Command::new("schtasks").args(["/Run", "/TN", windows_task_name()]))?;
         println!("✅ Service started");
         Ok(())
+    } else if cfg!(target_os = "android") {
+        let exe = std::env::current_exe().context("Failed to resolve current executable")?;
+        let _ = config;
+        let output = Command::new("sh")
+            .args([
+                "-c",
+                &format!("nohup {} daemon >/dev/null 2>&1 &", exe.display()),
+            ])
+            .output()
+            .context("Failed to start daemon")?;
+        if !output.status.success() {
+            anyhow::bail!("Failed to start daemon process");
+        }
+        println!("Service started (background process)");
+        Ok(())
     } else {
         let _ = config;
-        anyhow::bail!("Service management is supported on macOS and Linux only")
+        anyhow::bail!("Service management is not supported on this platform")
     }
 }
 
@@ -78,9 +95,14 @@ fn stop(config: &Config) -> Result<()> {
         let _ = run_checked(Command::new("schtasks").args(["/End", "/TN", task_name]));
         println!("✅ Service stopped");
         Ok(())
+    } else if cfg!(target_os = "android") {
+        let _ = config;
+        let _ = Command::new("pkill").arg("zeroclaw").output();
+        println!("Service stopped");
+        Ok(())
     } else {
         let _ = config;
-        anyhow::bail!("Service management is supported on macOS and Linux only")
+        anyhow::bail!("Service management is not supported on this platform")
     }
 }
 
@@ -137,7 +159,24 @@ fn status(config: &Config) -> Result<()> {
         return Ok(());
     }
 
-    anyhow::bail!("Service management is supported on macOS and Linux only")
+    if cfg!(target_os = "android") {
+        let _ = config;
+        let out = run_capture(Command::new("pgrep").arg("zeroclaw")).unwrap_or_default();
+        let running = !out.trim().is_empty();
+        println!(
+            "Service: {}",
+            if running { "running" } else { "not running" }
+        );
+        let boot_script = termux_boot_script();
+        if boot_script.exists() {
+            println!("Boot script: {}", boot_script.display());
+        } else {
+            println!("Boot script: not installed");
+        }
+        return Ok(());
+    }
+
+    anyhow::bail!("Service management is not supported on this platform")
 }
 
 fn uninstall(config: &Config) -> Result<()> {
@@ -181,7 +220,52 @@ fn uninstall(config: &Config) -> Result<()> {
         return Ok(());
     }
 
-    anyhow::bail!("Service management is supported on macOS and Linux only")
+    if cfg!(target_os = "android") {
+        let script = termux_boot_script();
+        if script.exists() {
+            fs::remove_file(&script)
+                .with_context(|| format!("Failed to remove {}", script.display()))?;
+        }
+        println!("Service uninstalled ({})", script.display());
+        return Ok(());
+    }
+
+    anyhow::bail!("Service management is not supported on this platform")
+}
+
+fn install_termux(_config: &Config) -> Result<()> {
+    let boot_dir = termux_boot_script()
+        .parent()
+        .expect("boot script must have parent dir")
+        .to_path_buf();
+    fs::create_dir_all(&boot_dir)?;
+
+    let exe = std::env::current_exe().context("Failed to resolve current executable")?;
+    let script = termux_boot_script();
+    let content = format!(
+        "#!/data/data/com.termux/files/usr/bin/sh\ntermux-wake-lock\n{} daemon &\n",
+        exe.display()
+    );
+    fs::write(&script, content)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
+    }
+
+    println!("Installed Termux:Boot script: {}", script.display());
+    println!("  Requires: Termux:Boot app from F-Droid");
+    println!("  Start now with: zeroclaw service start");
+    Ok(())
+}
+
+fn termux_boot_script() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/data/data/com.termux/files/home".into());
+    PathBuf::from(home)
+        .join(".termux")
+        .join("boot")
+        .join("zeroclaw")
 }
 
 fn install_macos(config: &Config) -> Result<()> {

@@ -177,7 +177,35 @@ async fn open_in_brave(url: &str) -> anyhow::Result<()> {
         anyhow::bail!("cmd start brave exited with status {status}");
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    #[cfg(target_os = "android")]
+    {
+        // Termux: try termux-open-url first (requires termux-api package),
+        // fall back to Android Activity Manager
+        let result = tokio::process::Command::new("termux-open-url")
+            .arg(url)
+            .status()
+            .await;
+        if let Ok(s) = result {
+            if s.success() {
+                return Ok(());
+            }
+        }
+        let status = tokio::process::Command::new("am")
+            .args(["start", "-a", "android.intent.action.VIEW", "-d", url])
+            .status()
+            .await?;
+        if status.success() {
+            return Ok(());
+        }
+        anyhow::bail!("Failed to open URL on Android (tried termux-open-url and am start)");
+    }
+
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "windows",
+        target_os = "android"
+    )))]
     {
         let _ = url;
         anyhow::bail!("browser_open is not supported on this OS");

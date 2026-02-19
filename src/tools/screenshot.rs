@@ -49,6 +49,19 @@ impl ScreenshotTool {
                      fi"
                 ),
             ])
+        } else if cfg!(target_os = "android") {
+            // Termux: termux-api provides screencap access (requires termux-api package)
+            Some(vec![
+                "sh".into(),
+                "-c".into(),
+                format!(
+                    "if command -v termux-screencap >/dev/null 2>&1; then \
+                         termux-screencap '{output_path}'; \
+                     else \
+                         echo 'NO_SCREENSHOT_TOOL' >&2; exit 1; \
+                     fi"
+                ),
+            ])
         } else {
             None
         }

@@ -14,6 +14,10 @@ For first-time setup and quick orientation.
 - Interactive onboarding: `zeroclaw onboard --interactive`
 - Validate environment: `zeroclaw status` + `zeroclaw doctor`
 
+## Platform Guides
+
+- Android / Termux: [../android-termux-guide.md](../android-termux-guide.md)
+
 ## Next
 
 - Runtime operations: [../operations/README.md](../operations/README.md)
