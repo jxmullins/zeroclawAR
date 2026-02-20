@@ -41,8 +41,11 @@ pub use delegate::DelegateTool;
 pub use file_read::FileReadTool;
 pub use file_write::FileWriteTool;
 pub use git_operations::GitOperationsTool;
+#[cfg(feature = "hardware")]
 pub use hardware_board_info::HardwareBoardInfoTool;
+#[cfg(feature = "hardware")]
 pub use hardware_memory_map::HardwareMemoryMapTool;
+#[cfg(feature = "hardware")]
 pub use hardware_memory_read::HardwareMemoryReadTool;
 pub use http_request::HttpRequestTool;
 pub use image_info::ImageInfoTool;
