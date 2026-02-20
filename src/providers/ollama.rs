@@ -91,6 +91,18 @@ struct OllamaFunction {
 
 // ─── Implementation ───────────────────────────────────────────────────────────
 
+const OLLAMA_CLOUD_URL: &str = "https://ollama.com";
+
+/// Check whether a model tag indicates Ollama cloud routing.
+///
+/// Ollama cloud model tags end with `-cloud` (e.g. `480b-cloud`) or equal `cloud`.
+fn is_cloud_model(model: &str) -> bool {
+    match model.rsplit_once(':') {
+        Some((_, tag)) => tag == "cloud" || tag.ends_with("-cloud"),
+        None => false,
+    }
+}
+
 impl OllamaProvider {
     pub fn new(base_url: Option<&str>, api_key: Option<&str>) -> Self {
         Self::new_with_reasoning(base_url, api_key, None)
@@ -127,27 +139,24 @@ impl OllamaProvider {
         crate::config::build_runtime_proxy_client_with_timeouts("provider.ollama", 300, 10)
     }
 
-    fn resolve_request_details(&self, model: &str) -> anyhow::Result<(String, bool)> {
-        let requests_cloud = model.ends_with(":cloud");
-        let normalized_model = model.strip_suffix(":cloud").unwrap_or(model).to_string();
-
-        if requests_cloud && self.is_local_endpoint() {
-            anyhow::bail!(
-                "Model '{}' requested cloud routing, but Ollama endpoint is local. Configure api_url with a remote Ollama endpoint.",
-                model
-            );
+    /// Resolve the effective model name, base URL, and auth flag for a request.
+    ///
+    /// Cloud models (tag ends with `-cloud` or equals `cloud`) are auto-routed
+    /// to `https://ollama.com` regardless of the configured endpoint.
+    fn resolve_request_details(&self, model: &str) -> anyhow::Result<(String, String, bool)> {
+        if is_cloud_model(model) {
+            if self.api_key.is_none() {
+                anyhow::bail!(
+                    "Model '{}' is a cloud model and requires authentication. \
+                     Set OLLAMA_API_KEY or config api_key.",
+                    model
+                );
+            }
+            Ok((model.to_string(), OLLAMA_CLOUD_URL.to_string(), true))
+        } else {
+            let should_auth = self.api_key.is_some() && !self.is_local_endpoint();
+            Ok((model.to_string(), self.base_url.clone(), should_auth))
         }
-
-        if requests_cloud && self.api_key.is_none() {
-            anyhow::bail!(
-                "Model '{}' requested cloud routing, but no API key is configured. Set OLLAMA_API_KEY or config api_key.",
-                model
-            );
-        }
-
-        let should_auth = self.api_key.is_some() && !self.is_local_endpoint();
-
-        Ok((normalized_model, should_auth))
     }
 
     fn parse_tool_arguments(arguments: &str) -> serde_json::Value {
@@ -306,11 +315,12 @@ impl OllamaProvider {
         model: &str,
         temperature: f64,
         should_auth: bool,
+        base_url: &str,
         tools: Option<&[serde_json::Value]>,
     ) -> anyhow::Result<ApiChatResponse> {
         let request = self.build_chat_request(messages, model, temperature, tools);
 
-        let url = format!("{}/api/chat", self.base_url);
+        let url = format!("{}/api/chat", base_url);
 
         tracing::debug!(
             "Ollama request: url={} model={} message_count={} temperature={} think={:?} tool_count={}",
@@ -456,7 +466,7 @@ impl Provider for OllamaProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
-        let (normalized_model, should_auth) = self.resolve_request_details(model)?;
+        let (normalized_model, effective_url, should_auth) = self.resolve_request_details(model)?;
 
         let mut messages = Vec::new();
 
@@ -480,7 +490,14 @@ impl Provider for OllamaProvider {
         });
 
         let response = self
-            .send_request(messages, &normalized_model, temperature, should_auth, None)
+            .send_request(
+                messages,
+                &normalized_model,
+                temperature,
+                should_auth,
+                &effective_url,
+                None,
+            )
             .await?;
 
         // If model returned tool calls, format them for loop_.rs's parse_tool_calls
@@ -519,7 +536,7 @@ impl Provider for OllamaProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
-        let (normalized_model, should_auth) = self.resolve_request_details(model)?;
+        let (normalized_model, effective_url, should_auth) = self.resolve_request_details(model)?;
 
         let api_messages = self.convert_messages(messages);
 
@@ -529,6 +546,7 @@ impl Provider for OllamaProvider {
                 &normalized_model,
                 temperature,
                 should_auth,
+                &effective_url,
                 None,
             )
             .await?;
@@ -572,7 +590,7 @@ impl Provider for OllamaProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<ChatResponse> {
-        let (normalized_model, should_auth) = self.resolve_request_details(model)?;
+        let (normalized_model, effective_url, should_auth) = self.resolve_request_details(model)?;
 
         let api_messages = self.convert_messages(messages);
 
@@ -586,6 +604,7 @@ impl Provider for OllamaProvider {
                 &normalized_model,
                 temperature,
                 should_auth,
+                &effective_url,
                 tools_opt,
             )
             .await?;
@@ -679,47 +698,90 @@ mod tests {
         assert_eq!(p.base_url, "");
     }
 
+    // ── is_cloud_model detection ────────────────────────────────────
+
     #[test]
-    fn cloud_suffix_strips_model_name() {
-        let p = OllamaProvider::new(Some("https://ollama.com"), Some("ollama-key"));
-        let (model, should_auth) = p.resolve_request_details("qwen3:cloud").unwrap();
-        assert_eq!(model, "qwen3");
+    fn is_cloud_model_detects_cloud_tag() {
+        assert!(is_cloud_model("qwen3:cloud"));
+    }
+
+    #[test]
+    fn is_cloud_model_detects_sized_cloud_tag() {
+        assert!(is_cloud_model("qwen3-coder:480b-cloud"));
+    }
+
+    #[test]
+    fn is_cloud_model_rejects_local_tag() {
+        assert!(!is_cloud_model("llama3:8b"));
+    }
+
+    #[test]
+    fn is_cloud_model_rejects_no_tag() {
+        assert!(!is_cloud_model("qwen3-coder"));
+    }
+
+    #[test]
+    fn is_cloud_model_rejects_cloud_in_name_not_tag() {
+        assert!(!is_cloud_model("cloud-model:latest"));
+    }
+
+    // ── resolve_request_details ──────────────────────────────────────
+
+    #[test]
+    fn cloud_model_auto_routes_to_ollama_com() {
+        let p = OllamaProvider::new(Some("http://192.168.1.100:11434"), Some("ollama-key"));
+        let (model, url, should_auth) = p.resolve_request_details("qwen3:cloud").unwrap();
+        assert_eq!(model, "qwen3:cloud");
+        assert_eq!(url, OLLAMA_CLOUD_URL);
         assert!(should_auth);
     }
 
     #[test]
-    fn cloud_suffix_with_local_endpoint_errors() {
+    fn cloud_model_preserves_full_tag() {
         let p = OllamaProvider::new(None, Some("ollama-key"));
-        let error = p
-            .resolve_request_details("qwen3:cloud")
-            .expect_err("cloud suffix should fail on local endpoint");
-        assert!(error
-            .to_string()
-            .contains("requested cloud routing, but Ollama endpoint is local"));
+        let (model, url, _) = p.resolve_request_details("qwen3-coder:480b-cloud").unwrap();
+        assert_eq!(model, "qwen3-coder:480b-cloud");
+        assert_eq!(url, OLLAMA_CLOUD_URL);
     }
 
     #[test]
-    fn cloud_suffix_without_api_key_errors() {
-        let p = OllamaProvider::new(Some("https://ollama.com"), None);
+    fn cloud_model_from_local_endpoint_auto_routes() {
+        let p = OllamaProvider::new(None, Some("ollama-key"));
+        let (_model, url, should_auth) = p.resolve_request_details("qwen3:cloud").unwrap();
+        assert_eq!(url, OLLAMA_CLOUD_URL);
+        assert!(should_auth);
+    }
+
+    #[test]
+    fn cloud_model_without_api_key_errors() {
+        let p = OllamaProvider::new(None, None);
         let error = p
             .resolve_request_details("qwen3:cloud")
-            .expect_err("cloud suffix should require API key");
+            .expect_err("cloud model should require API key");
         assert!(error
             .to_string()
-            .contains("requested cloud routing, but no API key is configured"));
+            .contains("cloud model and requires authentication"));
+    }
+
+    #[test]
+    fn local_model_uses_configured_url() {
+        let p = OllamaProvider::new(Some("http://192.168.1.100:11434"), Some("ollama-key"));
+        let (_model, url, should_auth) = p.resolve_request_details("llama3:8b").unwrap();
+        assert_eq!(url, "http://192.168.1.100:11434");
+        assert!(should_auth);
     }
 
     #[test]
     fn remote_endpoint_auth_enabled_when_key_present() {
         let p = OllamaProvider::new(Some("https://ollama.com"), Some("ollama-key"));
-        let (_model, should_auth) = p.resolve_request_details("qwen3").unwrap();
+        let (_model, _url, should_auth) = p.resolve_request_details("qwen3").unwrap();
         assert!(should_auth);
     }
 
     #[test]
     fn local_endpoint_auth_disabled_even_with_key() {
         let p = OllamaProvider::new(None, Some("ollama-key"));
-        let (_model, should_auth) = p.resolve_request_details("llama3").unwrap();
+        let (_model, _url, should_auth) = p.resolve_request_details("llama3").unwrap();
         assert!(!should_auth);
     }
 
