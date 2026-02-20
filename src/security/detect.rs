@@ -112,14 +112,17 @@ fn detect_best_sandbox() -> Arc<dyn Sandbox> {
     }
 
     // Docker is heavy but works everywhere if docker is installed
-    if let Ok(sandbox) = super::docker::DockerSandbox::probe() {
-        tracing::info!("Docker sandbox enabled");
-        return Arc::new(sandbox);
-    }
+    #[cfg(not(target_os = "android"))]
+    {
+        if let Ok(sandbox) = super::docker::DockerSandbox::probe() {
+            tracing::info!("Docker sandbox enabled");
+            return Arc::new(sandbox);
+        }
 
-    // Fallback: application-layer security only
-    tracing::info!("No sandbox backend available, using application-layer security");
-    Arc::new(super::traits::NoopSandbox)
+        // Fallback: application-layer security only
+        tracing::info!("No sandbox backend available, using application-layer security");
+        Arc::new(super::traits::NoopSandbox)
+    }
 }
 
 #[cfg(test)]
